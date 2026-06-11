@@ -59,6 +59,8 @@ class CallGraphAnalyzer:
         """Initialize the call graph analyzer."""
         self.functions: Dict[str, Node] = {}
         self.call_relationships: List[CallRelationship] = []
+        self._python_project_modules: set = set()
+        self._python_external_import_roots: set = set()
         logger.debug("CallGraphAnalyzer initialized.")
 
     def analyze_code_files(self, code_files: List[Dict], base_dir: str) -> Dict:
@@ -77,6 +79,8 @@ class CallGraphAnalyzer:
         self.functions = {}
         self.call_relationships = []
         code_files = self._route_contextual_headers(code_files, base_dir)
+        self._python_project_modules = self._collect_python_modules(code_files)
+        self._python_external_import_roots = set()
 
         files_analyzed = 0
         files_failed = 0
@@ -265,8 +269,11 @@ class CallGraphAnalyzer:
         from codewiki.src.be.dependency_analyzer.analyzers.python import analyze_python_file
 
         try:
-            functions, relationships = analyze_python_file(
-                file_path, content, repo_path=base_dir
+            functions, relationships, external_import_roots = analyze_python_file(
+                file_path,
+                content,
+                repo_path=base_dir,
+                project_modules=self._python_project_modules,
             )
 
             for func in functions:
@@ -274,8 +281,28 @@ class CallGraphAnalyzer:
                 self.functions[func_id] = func
 
             self.call_relationships.extend(relationships)
+            self._python_external_import_roots.update(external_import_roots)
         except Exception as e:
             logger.error(f"Failed to analyze Python file {file_path}: {e}", exc_info=True)
+
+    @staticmethod
+    def _collect_python_modules(code_files: List[Dict]) -> set:
+        """Dotted module paths for every Python file in the repository."""
+        modules = set()
+        for file_info in code_files:
+            if file_info.get("language") != "python":
+                continue
+            path = file_info["path"]
+            for ext in (".py", ".pyx"):
+                if path.endswith(ext):
+                    path = path[: -len(ext)]
+                    break
+            module = path.replace("/", ".").replace("\\", ".")
+            if module.endswith(".__init__"):
+                module = module[: -len(".__init__")]
+            if module:
+                modules.add(module)
+        return modules
 
     def _analyze_javascript_file(self, file_path: str, content: str, repo_dir: str):
         """
@@ -462,11 +489,12 @@ class CallGraphAnalyzer:
         Attempts to match function calls to actual function definitions,
         handling cross-language calls where possible.
         """
-        indexes = self._build_resolution_indexes()
         for func_id, func_info in self.functions.items():
             if not func_info.language:
                 file_ext = Path(func_info.file_path).suffix.lower()
                 func_info.language = CODE_EXTENSIONS.get(file_ext)
+
+        indexes = self._build_resolution_indexes()
 
         resolved_count = 0
         for relationship in self.call_relationships:
@@ -523,21 +551,60 @@ class CallGraphAnalyzer:
                 for project in java_packages
             ):
                 return True
+        if language == "python" and "." in callee:
+            return self._is_external_python_callee(callee)
         return False
 
-    def _build_resolution_indexes(self) -> Dict[str, Dict[str, List[str]]]:
-        exact: Dict[str, List[str]] = defaultdict(list)
-        simple: Dict[str, List[str]] = defaultdict(list)
+    def _is_external_python_callee(self, callee: str) -> bool:
+        """Classify a still-unresolved dotted Python callee.
+
+        A callee whose dotted prefix aligns with a project module is an
+        honest project gap, never external. Otherwise the import-origin rule
+        (head was imported from outside the project) and the core-object
+        method rule (a tail like ``append``/``endswith`` on an unknowable
+        receiver can never be a project component) apply.
+        """
+        from codewiki.src.be.dependency_analyzer.analyzers.python import is_project_import
+        from codewiki.src.be.dependency_analyzer.utils.external_symbols import (
+            PYTHON_OBJECT_METHODS,
+        )
+
+        parts = callee.split(".")
+        if self._python_project_modules:
+            for end in range(len(parts) - 1, 0, -1):
+                if is_project_import(".".join(parts[:end]), self._python_project_modules):
+                    return False
+        if parts[0] in self._python_external_import_roots:
+            return True
+        return parts[-1] in PYTHON_OBJECT_METHODS
+
+    def _build_resolution_indexes(self) -> Dict[str, Dict]:
+        """Build exact/simple-name lookup indexes, both globally and per
+        language. Resolution prefers the caller's own language partition: a
+        name that is unique within the caller's language resolves even when
+        another language defines the same name, and names made ambiguous only
+        by foreign-language components keep resolving as before."""
+        def make() -> Dict[str, Dict[str, List[str]]]:
+            return {"exact": defaultdict(list), "simple": defaultdict(list)}
+
+        global_indexes = make()
+        by_lang: Dict[str, Dict[str, Dict[str, List[str]]]] = defaultdict(make)
 
         def add(index: Dict[str, List[str]], key: Optional[str], func_id: str) -> None:
             if key and func_id not in index[key]:
                 index[key].append(func_id)
 
         for func_id, func_info in self.functions.items():
-            add(exact, func_id, func_id)
-            add(exact, func_info.component_id, func_id)
-            add(exact, func_info.qualified_name, func_id)
-            add(exact, func_info.name, func_id)
+            targets = [global_indexes]
+            if func_info.language:
+                targets.append(by_lang[func_info.language])
+
+            exact_keys = [
+                func_id,
+                func_info.component_id,
+                func_info.qualified_name,
+                func_info.name,
+            ]
 
             names = {func_info.name}
             if func_info.component_id:
@@ -548,37 +615,58 @@ class CallGraphAnalyzer:
                 if len(parts) >= 2:
                     names.add(".".join(parts[-2:]))
 
-            for name in names:
-                add(simple, name, func_id)
-                if name and "." in name:
-                    add(simple, name.split(".")[-1], func_id)
+            for target in targets:
+                for key in exact_keys:
+                    add(target["exact"], key, func_id)
+                for name in names:
+                    add(target["simple"], name, func_id)
+                    if name and "." in name:
+                        add(target["simple"], name.split(".")[-1], func_id)
 
-        return {"exact": exact, "simple": simple}
+        return {
+            "exact": global_indexes["exact"],
+            "simple": global_indexes["simple"],
+            "by_lang": dict(by_lang),
+        }
 
-    def _resolve_callee(self, relationship: CallRelationship, indexes: Dict[str, Dict[str, List[str]]]) -> Optional[str]:
+    def _resolve_callee(self, relationship: CallRelationship, indexes: Dict[str, Dict]) -> Optional[str]:
+        caller = self.functions.get(relationship.caller)
+        caller_language = caller.language if caller else None
+
+        lang_indexes = indexes["by_lang"].get(caller_language) if caller_language else None
+        if lang_indexes:
+            match = self._resolve_callee_in(relationship, lang_indexes["exact"], lang_indexes["simple"])
+            if match:
+                return match
+
+        return self._resolve_callee_in(relationship, indexes["exact"], indexes["simple"])
+
+    def _resolve_callee_in(
+        self,
+        relationship: CallRelationship,
+        exact: Dict[str, List[str]],
+        simple: Dict[str, List[str]],
+    ) -> Optional[str]:
         callee_name = relationship.callee
 
-        exact_match = self._unique_match(indexes["exact"], callee_name)
+        exact_match = self._unique_match(exact, callee_name)
         if exact_match:
             return exact_match
 
         if "::" in callee_name:
             suffix = callee_name.split("::")[-1]
-            exact_match = self._unique_match(indexes["exact"], suffix)
+            exact_match = self._unique_match(exact, suffix)
             if exact_match:
                 return exact_match
-            simple_match = self._unique_match(indexes["simple"], suffix)
+            simple_match = self._unique_match(simple, suffix)
             if simple_match:
                 return simple_match
 
         if "." in callee_name:
-            exact_match = self._unique_match(indexes["exact"], callee_name)
-            if exact_match:
-                return exact_match
-            simple_match = self._unique_match(indexes["simple"], callee_name)
+            simple_match = self._unique_match(simple, callee_name)
             if simple_match:
                 return simple_match
-            tail_match = self._unique_match(indexes["simple"], callee_name.split(".")[-1])
+            tail_match = self._unique_match(simple, callee_name.split(".")[-1])
             if tail_match:
                 return tail_match
 
@@ -586,11 +674,11 @@ class CallGraphAnalyzer:
         if caller and caller.language == "java" and "." not in callee_name:
             package = self._java_package_for_node(caller)
             if package:
-                same_package_match = self._unique_match(indexes["exact"], f"{package}.{callee_name}")
+                same_package_match = self._unique_match(exact, f"{package}.{callee_name}")
                 if same_package_match:
                     return same_package_match
 
-        return self._unique_match(indexes["simple"], callee_name)
+        return self._unique_match(simple, callee_name)
 
     def _unique_match(self, index: Dict[str, List[str]], key: str) -> Optional[str]:
         matches = index.get(key, [])
