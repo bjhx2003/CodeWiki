@@ -43,7 +43,8 @@ def _detect_changed_files(
     repo_path: Path,
     output_dir: Path,
     logger,
-    verbose: bool
+    verbose: bool,
+    compare_to: Optional[str] = None
 ) -> Optional[List[str]]:
     """
     Detect files changed since the last documentation generation.
@@ -57,21 +58,25 @@ def _detect_changed_files(
     """
     import json
 
-    metadata_path = output_dir / "metadata.json"
-    if not metadata_path.exists():
-        if verbose:
-            logger.debug("No metadata.json found — cannot detect changes, running full generation.")
-        return None
-
-    try:
-        metadata = json.loads(metadata_path.read_text())
-        prev_commit = metadata.get("generation_info", {}).get("commit_id")
-        if not prev_commit:
+    prev_commit = None
+    if compare_to:
+        prev_commit = compare_to
+    else:
+        metadata_path = output_dir / "metadata.json"
+        if not metadata_path.exists():
             if verbose:
-                logger.debug("No commit_id in metadata — running full generation.")
+                logger.debug("No metadata.json found — cannot detect changes, running full generation.")
             return None
-    except (json.JSONDecodeError, OSError):
-        return None
+
+        try:
+            metadata = json.loads(metadata_path.read_text())
+            prev_commit = metadata.get("generation_info", {}).get("commit_id")
+            if not prev_commit:
+                if verbose:
+                    logger.debug("No commit_id in metadata — running full generation.")
+                return None
+        except (json.JSONDecodeError, OSError):
+            return None
 
     # Get current HEAD commit
     try:
@@ -295,6 +300,12 @@ def _invalidate_affected_modules(
     is_flag=True,
     help="Incremental update: only regenerate modules affected by changes since last generation",
 )
+@click.option(
+    "--compare-to",
+    type=str,
+    default=None,
+    help="Commit hash to compare against for incremental updates (overrides stored commit in metadata.json)",
+)
 @click.pass_context
 def generate_command(
     ctx,
@@ -312,7 +323,8 @@ def generate_command(
     max_token_per_module: Optional[int],
     max_token_per_leaf_module: Optional[int],
     max_depth: Optional[int],
-    update: bool = False
+    update: bool = False,
+    compare_to: Optional[str] = None
 ):
     """
     Generate comprehensive documentation for a code repository.
@@ -416,10 +428,14 @@ def generate_command(
         
         logger.success(f"Output directory: {output_dir}")
         
+        # If a base commit is specified to compare against, implicitly enable update
+        if compare_to:
+            update = True
+
         # Incremental update: detect changed files and selectively regenerate
         changed_files = None
         if update and output_dir.exists():
-            changed_files = _detect_changed_files(repo_path, output_dir, logger, verbose)
+            changed_files = _detect_changed_files(repo_path, output_dir, logger, verbose, compare_to=compare_to)
             if changed_files is not None and len(changed_files) == 0:
                 logger.success("No changes detected since last generation. Documentation is up to date.")
                 sys.exit(EXIT_SUCCESS)
