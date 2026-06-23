@@ -292,6 +292,72 @@ JAVA_OBJECT_METHODS = {
 }
 
 
+# System.Object members. A call to one of these on a project type that does not
+# override it locally can never resolve to a project component, mirroring the
+# Java set above. `Dispose` is deliberately excluded: it is frequently a project
+# member (IDisposable implementations), and a call to it is an honest gap rather
+# than runtime noise.
+CSHARP_OBJECT_METHODS = {
+    "ToString",
+    "Equals",
+    "GetHashCode",
+    "GetType",
+    "MemberwiseClone",
+    "ReferenceEquals",
+    "Finalize",
+}
+
+
+# A small, language-level set of types reachable via the .NET SDK *implicit
+# usings* (System, System.Collections.Generic, System.IO, System.Linq,
+# System.Net.Http, System.Threading, System.Threading.Tasks). Those namespaces
+# are imported by the SDK without any `using` directive in the file, so the
+# generic using-namespace wildcard rule in the analyzer cannot reach them. Every
+# other framework/NuGet type is filtered generically by the `System.`/`Microsoft.`
+# prefix rule combined with the file's `using` namespaces — per the project's
+# audit lesson, prefer resolving over enumerating, so this set stays small.
+CSHARP_EXTERNAL_SYMBOLS = {
+    # System core
+    "Object", "String", "Console", "Convert", "Math", "Array", "Enum",
+    "Attribute", "Type", "Activator", "Environment", "GC", "Random", "Uri",
+    "Guid", "DateTime", "DateTimeOffset", "TimeSpan", "Nullable", "Lazy",
+    "Tuple", "ValueTuple", "Span", "Memory", "ReadOnlySpan", "BitConverter",
+    "Buffer", "Version", "Index", "Range",
+    # Delegates / common interfaces
+    "Action", "Func", "Predicate", "Comparison", "EventHandler", "EventArgs",
+    "IDisposable", "IAsyncDisposable", "IComparable", "IEquatable",
+    "IFormattable", "IFormatProvider", "ICloneable",
+    # Exceptions
+    "Exception", "ArgumentException", "ArgumentNullException",
+    "ArgumentOutOfRangeException", "InvalidOperationException",
+    "NotImplementedException", "NotSupportedException", "NullReferenceException",
+    "IndexOutOfRangeException", "FormatException", "OverflowException",
+    "ObjectDisposedException", "OperationCanceledException",
+    "AggregateException", "TimeoutException", "InvalidCastException",
+    "KeyNotFoundException", "ApplicationException", "SystemException",
+    # System.Collections.Generic
+    "List", "Dictionary", "HashSet", "SortedSet", "SortedDictionary",
+    "SortedList", "Queue", "Stack", "LinkedList", "KeyValuePair",
+    "IEnumerable", "IEnumerator", "ICollection", "IList", "IDictionary",
+    "ISet", "IReadOnlyList", "IReadOnlyCollection", "IReadOnlyDictionary",
+    "Comparer", "EqualityComparer",
+    # System.IO
+    "File", "Directory", "Path", "Stream", "StreamReader", "StreamWriter",
+    "MemoryStream", "FileStream", "TextReader", "TextWriter", "BinaryReader",
+    "BinaryWriter", "FileInfo", "DirectoryInfo",
+    # System.Linq
+    "Enumerable", "IQueryable", "IGrouping", "IOrderedEnumerable",
+    # System.Net.Http
+    "HttpClient", "HttpRequestMessage", "HttpResponseMessage", "HttpContent",
+    # System.Threading / Tasks
+    "Thread", "Interlocked", "Monitor", "Mutex", "SemaphoreSlim",
+    "CancellationToken", "CancellationTokenSource", "Task", "ValueTask",
+    "TaskCompletionSource",
+    # System.Text (not implicit but ubiquitous)
+    "StringBuilder",
+}
+
+
 CPP_STANDARD_HEADERS = {
     "algorithm",
     "array",
@@ -618,6 +684,19 @@ def is_external_symbol(language: str | None, symbol: str) -> bool:
         if "." in symbol:
             return False
         return symbol in JAVA_EXTERNAL_SYMBOLS
+
+    if language == "csharp":
+        # `System.`/`Microsoft.` are kept inside the csharp branch rather than as
+        # a global prefix rule (unlike `java.`): those reverse-DNS prefixes are
+        # globally unambiguous, but another language can legitimately own a
+        # `System.*` symbol. A dotted name that survives the prefix check is
+        # qualified to some non-framework namespace; whether it belongs to the
+        # project is decided by the resolver's namespace-origin check, not here.
+        if symbol.startswith(("System.", "Microsoft.")):
+            return True
+        if "." in symbol:
+            return False
+        return symbol in CSHARP_EXTERNAL_SYMBOLS
 
     if language == "python":
         # Operate on the raw dotted symbol: the head identifies the module

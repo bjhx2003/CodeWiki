@@ -507,7 +507,7 @@ class CallGraphAnalyzer:
                 relationship.is_resolved = True
                 resolved_count += 1
 
-        java_packages = self._java_project_packages()
+        dotted_packages = self._dotted_project_packages()
         self.call_relationships = [
             relationship
             for relationship in self.call_relationships
@@ -515,20 +515,24 @@ class CallGraphAnalyzer:
             or not self._is_external_callee(
                 self._caller_language(relationship.caller),
                 relationship.callee,
-                java_packages,
+                dotted_packages,
             )
         ]
 
-    def _java_project_packages(self) -> set:
-        packages = set()
+    def _dotted_project_packages(self) -> Dict[str, set]:
+        """Project packages/namespaces, partitioned by language. Java and C#
+        share the namespace-origin rule: a dotted callee qualified to a package
+        with no prefix relation to any project package came from a third-party
+        import."""
+        packages: Dict[str, set] = defaultdict(set)
         for func_info in self.functions.values():
-            if func_info.language == "java":
-                package = self._java_package_for_node(func_info)
+            if func_info.language in ("java", "csharp"):
+                package = self._dotted_package_for_node(func_info)
                 if package:
-                    packages.add(package)
+                    packages[func_info.language].add(package)
         return packages
 
-    def _is_external_callee(self, language: Optional[str], callee: str, java_packages: set) -> bool:
+    def _is_external_callee(self, language: Optional[str], callee: str, dotted_packages: Dict[str, set]) -> bool:
         """Classify a still-unresolved callee as external, after project
         resolution has had its chance.
 
@@ -542,13 +546,13 @@ class CallGraphAnalyzer:
             return True
         if language in ("c", "cpp") and is_macro_name(callee):
             return True
-        if language == "java" and "." in callee and java_packages:
+        if language in ("java", "csharp") and "." in callee and dotted_packages.get(language):
             package = callee.rsplit(".", 1)[0]
             if not any(
                 package == project
                 or package.startswith(project + ".")
                 or project.startswith(package + ".")
-                for project in java_packages
+                for project in dotted_packages[language]
             ):
                 return True
         if language == "python" and "." in callee:
@@ -671,8 +675,8 @@ class CallGraphAnalyzer:
                 return tail_match
 
         caller = self.functions.get(relationship.caller)
-        if caller and caller.language == "java" and "." not in callee_name:
-            package = self._java_package_for_node(caller)
+        if caller and caller.language in ("java", "csharp") and "." not in callee_name:
+            package = self._dotted_package_for_node(caller)
             if package:
                 same_package_match = self._unique_match(exact, f"{package}.{callee_name}")
                 if same_package_match:
@@ -684,7 +688,11 @@ class CallGraphAnalyzer:
         matches = index.get(key, [])
         return matches[0] if len(matches) == 1 else None
 
-    def _java_package_for_node(self, node: Node) -> str:
+    def _dotted_package_for_node(self, node: Node) -> str:
+        """The package (Java) / namespace (C#) a node lives in, derived from its
+        dotted qualified name. Both languages share the same shape: a type's
+        package is its qualified name minus the type, a method's is minus
+        ``Type.method``."""
         qualified_name = node.qualified_name or ""
         parts = qualified_name.split(".")
         if len(parts) < 2:
