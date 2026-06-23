@@ -192,6 +192,10 @@ codewiki generate --create-branch --github-pages --verbose
 
 # Incremental update (only regenerate changed modules since last run)
 codewiki generate --update
+
+# Incremental update using a specific commit hash to compare against (useful in CI/CD or squashed PRs)
+# This overrides the stored commit hash in metadata.json and implicitly enables --update
+codewiki generate --compare-to <commit-hash>
 ```
 
 ### Customization Options
