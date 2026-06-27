@@ -399,7 +399,6 @@ CodeWiki employs a three-stage process for comprehensive documentation generatio
 ## Additional Resources
 
 ### Documentation & Guides
-- **[This Repo's Generated Docs](./docs/index.html)** - Interactive documentation for CodeWiki itself, produced by CodeWiki (start at [`docs/overview.md`](./docs/overview.md))
 - **[MCP Server](codewiki/mcp/)** - Model Context Protocol server for IDE integrations
 - **[Docker Deployment](docker/DOCKER_README.md)** - Containerized deployment instructions
 - **[Development Guide](DEVELOPMENT.md)** - Project structure, architecture, and contributing guidelines
@@ -439,6 +438,18 @@ If you use CodeWiki in your research, please cite:
      <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=FSoft-AI4Code/CodeWiki&type=Date" />
      <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=FSoft-AI4Code/CodeWiki&type=Date" />
    </picture>
+  </a>
+</p>
+
+---
+
+## Sponsors
+
+CodeWiki is proudly sponsored by **FPT Software**.
+
+<p align="center">
+  <a href="https://fptsoftware.com/en">
+    <img src="./img/fpt-logo.svg" alt="FPT Software" width="220" />
   </a>
 </p>
 
